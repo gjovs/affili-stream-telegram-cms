@@ -1,5 +1,4 @@
 import { Bot, Context, InlineKeyboard, webhookCallback } from 'grammy';
-import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { scrapeUrl } from '@/lib/scraper';
 import { getStoreName } from '@/lib/utils';
@@ -22,6 +21,9 @@ enum BotState {
   WAITING_CATEGORY = 'WAITING_CATEGORY',
   WAITING_IMAGE = 'WAITING_IMAGE',
   WAITING_MANUAL_DATA = 'WAITING_MANUAL_DATA',
+  // Blog states
+  WAITING_BLOG_TITLE = 'WAITING_BLOG_TITLE',
+  WAITING_BLOG_CONTENT = 'WAITING_BLOG_CONTENT',
 }
 
 interface SessionData {
@@ -35,12 +37,15 @@ interface SessionData {
   category?: string;
   affiliateLink?: string;
   editField?: string;
+  // Blog data
+  blogTitle?: string;
+  blogContent?: string;
+  blogSlug?: string;
 }
 
 // Check if user is admin
 function isAdmin(ctx: Context): boolean {
   if (!ADMIN_TELEGRAM_ID) {
-    // If ADMIN_TELEGRAM_ID is not set, allow all users (development mode)
     console.warn('ADMIN_TELEGRAM_ID not set - bot is open to all users');
     return true;
   }
@@ -86,30 +91,51 @@ async function clearSession(chatId: number) {
   }).catch(() => {});
 }
 
+// Generate slug from title
+function generateSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove accents
+    .replace(/[^a-z0-9\s-]/g, '') // Remove special chars
+    .replace(/\s+/g, '-') // Replace spaces with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens
+    .trim();
+}
+
 // Start command
 bot.command('start', async (ctx) => {
   await ctx.reply(
-    '👋 Ola! Sou o bot de cadastro de ofertas.\n\n' +
-    'Envie um link de produto e eu vou extrair as informacoes automaticamente!\n\n' +
-    'Comandos disponiveis:\n' +
-    '/start - Iniciar o bot\n' +
-    '/cancel - Cancelar operacao atual\n' +
-    '/help - Ver ajuda'
+    '👋 Ola! Sou o bot de cadastro de ofertas e blog.\n\n' +
+    '*Ofertas:*\n' +
+    'Envie um link de produto para cadastrar uma oferta.\n\n' +
+    '*Blog:*\n' +
+    '/newpost - Criar novo post\n' +
+    '/posts - Listar posts\n\n' +
+    '*Outros:*\n' +
+    '/help - Ver todos os comandos\n' +
+    '/cancel - Cancelar operacao atual',
+    { parse_mode: 'Markdown' }
   );
 });
 
 // Help command
 bot.command('help', async (ctx) => {
   await ctx.reply(
-    '📖 *Como usar o bot:*\n\n' +
-    '1️⃣ Envie um link de produto (Amazon, Shopee, Magalu, etc.)\n' +
-    '2️⃣ O bot vai extrair as informacoes automaticamente\n' +
-    '3️⃣ Edite os campos se necessario usando os botoes\n' +
-    '4️⃣ Clique em "Publicar" para adicionar ao site\n\n' +
-    '*Comandos:*\n' +
-    '/start - Iniciar o bot\n' +
-    '/cancel - Cancelar operacao atual\n' +
-    '/help - Ver esta mensagem',
+    '📖 *Comandos disponiveis:*\n\n' +
+    '*Ofertas:*\n' +
+    '• Envie um link de produto para cadastrar\n' +
+    '• O bot extrai os dados automaticamente\n' +
+    '• Edite e publique com os botoes\n\n' +
+    '*Blog:*\n' +
+    '/newpost - Criar novo post no blog\n' +
+    '/posts - Listar todos os posts\n' +
+    '/publish\\_post\\_ID - Publicar post (ex: /publish\\_post\\_abc123)\n' +
+    '/delete\\_post\\_ID - Deletar post\n\n' +
+    '*Geral:*\n' +
+    '/start - Menu inicial\n' +
+    '/cancel - Cancelar operacao\n' +
+    '/help - Esta mensagem',
     { parse_mode: 'Markdown' }
   );
 });
@@ -120,8 +146,92 @@ bot.command('cancel', async (ctx) => {
   if (chatId) {
     await clearSession(chatId);
   }
-  await ctx.reply('❌ Operacao cancelada. Envie um novo link para comecar.');
+  await ctx.reply('❌ Operacao cancelada.');
 });
+
+// ==================== BLOG COMMANDS ====================
+
+// New post command
+bot.command('newpost', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  await updateSession(chatId, BotState.WAITING_BLOG_TITLE, {});
+  await ctx.reply(
+    '📝 *Criar novo post no blog*\n\n' +
+    'Digite o *titulo* do post:',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// List posts command
+bot.command('posts', async (ctx) => {
+  const posts = await prisma.post.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+
+  if (posts.length === 0) {
+    await ctx.reply('📭 Nenhum post encontrado.\n\nUse /newpost para criar um.');
+    return;
+  }
+
+  let message = '📚 *Ultimos posts:*\n\n';
+  for (const post of posts) {
+    const status = post.published ? '✅' : '📝';
+    message += `${status} *${post.title}*\n`;
+    message += `   ID: \`${post.id}\`\n`;
+    message += `   Slug: /${post.slug}\n`;
+    message += `   ${post.published ? 'Publicado' : 'Rascunho'}\n\n`;
+  }
+
+  message += '_Comandos:_\n';
+  message += '/publish\\_post\\_ID - Publicar\n';
+  message += '/delete\\_post\\_ID - Deletar';
+
+  await ctx.reply(message, { parse_mode: 'Markdown' });
+});
+
+// Publish post command
+bot.hears(/^\/publish_post_(.+)$/, async (ctx) => {
+  const postId = ctx.match[1];
+
+  try {
+    const post = await prisma.post.update({
+      where: { id: postId },
+      data: { published: true },
+    });
+
+    revalidatePath('/blog');
+    revalidatePath(`/blog/${post.slug}`);
+
+    await ctx.reply(
+      `✅ Post publicado!\n\n*${post.title}*\n\nAcesse: /blog/${post.slug}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch {
+    await ctx.reply('❌ Post nao encontrado. Verifique o ID.');
+  }
+});
+
+// Delete post command
+bot.hears(/^\/delete_post_(.+)$/, async (ctx) => {
+  const postId = ctx.match[1];
+
+  try {
+    const post = await prisma.post.delete({
+      where: { id: postId },
+    });
+
+    revalidatePath('/blog');
+
+    await ctx.reply(`🗑️ Post deletado: *${post.title}*`, { parse_mode: 'Markdown' });
+  } catch {
+    await ctx.reply('❌ Post nao encontrado. Verifique o ID.');
+  }
+});
+
+// ==================== PRODUCT HANDLERS ====================
 
 // Handle URLs
 bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
@@ -137,7 +247,6 @@ bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
     const storeName = getStoreName(url);
 
     if (!scrapedData.success) {
-      // Scraping failed completely
       await ctx.reply(
         `❌ Nao consegui ler este link.\n\nErro: ${scrapedData.error}\n\n` +
         '📸 Envie uma foto do produto e depois eu peco os detalhes manualmente.'
@@ -146,19 +255,17 @@ bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
       return;
     }
 
-    // Store initial data
     const sessionData: SessionData = {
       url,
       title: scrapedData.title || undefined,
       image: scrapedData.image || undefined,
       price: scrapedData.price || undefined,
       storeName,
-      affiliateLink: url, // You can add affiliate conversion logic here
+      affiliateLink: url,
     };
 
     await updateSession(chatId, BotState.IDLE, sessionData);
 
-    // Build preview message
     let message = '📦 *Dados encontrados:*\n\n';
     message += `🏪 Loja: ${storeName}\n`;
     message += `📝 Titulo: ${scrapedData.title || '❌ Nao encontrado'}\n`;
@@ -166,7 +273,6 @@ bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
     message += `🖼️ Imagem: ${scrapedData.image ? '✅ Encontrada' : '❌ Nao encontrada'}\n\n`;
     message += 'Voce pode editar os campos ou publicar diretamente:';
 
-    // Create inline keyboard
     const keyboard = new InlineKeyboard();
     
     if (!scrapedData.title) keyboard.text('✏️ Adicionar Titulo', 'edit_title');
@@ -191,7 +297,6 @@ bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
     keyboard.row();
     keyboard.text('✅ Publicar', 'publish').text('❌ Cancelar', 'cancel');
 
-    // Send preview with image if available
     if (scrapedData.image) {
       try {
         await ctx.replyWithPhoto(scrapedData.image, {
@@ -200,7 +305,6 @@ bot.hears(/https?:\/\/[^\s]+/, async (ctx) => {
           reply_markup: keyboard,
         });
       } catch {
-        // If image fails, send text only
         await ctx.reply(message, {
           parse_mode: 'Markdown',
           reply_markup: keyboard,
@@ -355,13 +459,14 @@ bot.on('message:text', async (ctx) => {
   const session = await getSession(chatId);
   
   if (!session || session.state === BotState.IDLE) {
-    return; // Ignore or already handled by URL handler
+    return;
   }
 
   const data = session.data as SessionData;
   const text = ctx.message.text;
 
   switch (session.state) {
+    // Product states
     case BotState.WAITING_TITLE:
       data.title = text;
       await updateSession(chatId, BotState.IDLE, data);
@@ -397,19 +502,114 @@ bot.on('message:text', async (ctx) => {
       break;
 
     case BotState.WAITING_MANUAL_DATA:
-      // First input after image upload is the title
       data.title = text;
       await updateSession(chatId, BotState.WAITING_PRICE, data);
       await ctx.reply('✅ Titulo salvo! Agora me envie o *preco* (ex: 99.90):', {
         parse_mode: 'Markdown',
       });
       break;
+
+    // Blog states
+    case BotState.WAITING_BLOG_TITLE:
+      data.blogTitle = text;
+      data.blogSlug = generateSlug(text);
+      await updateSession(chatId, BotState.WAITING_BLOG_CONTENT, data);
+      await ctx.reply(
+        `✅ Titulo: *${text}*\n` +
+        `📎 Slug: \`${data.blogSlug}\`\n\n` +
+        'Agora digite o *conteudo* do post:\n\n' +
+        '_Dica: Voce pode usar varias mensagens. Quando terminar, envie /done_',
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case BotState.WAITING_BLOG_CONTENT:
+      if (text === '/done') {
+        // Save blog post
+        if (!data.blogTitle || !data.blogContent) {
+          await ctx.reply('❌ Titulo ou conteudo vazio. Use /newpost para comecar novamente.');
+          await clearSession(chatId);
+          return;
+        }
+
+        try {
+          const post = await prisma.post.create({
+            data: {
+              title: data.blogTitle,
+              slug: data.blogSlug || generateSlug(data.blogTitle),
+              content: data.blogContent,
+              published: false,
+            },
+          });
+
+          await clearSession(chatId);
+          
+          const keyboard = new InlineKeyboard()
+            .text('✅ Publicar agora', `publish_blog_${post.id}`)
+            .text('📝 Manter rascunho', 'keep_draft');
+
+          await ctx.reply(
+            `✅ *Post criado com sucesso!*\n\n` +
+            `📝 *${post.title}*\n` +
+            `📎 Slug: \`${post.slug}\`\n` +
+            `📊 Status: Rascunho\n\n` +
+            `ID: \`${post.id}\``,
+            { parse_mode: 'Markdown', reply_markup: keyboard }
+          );
+        } catch (error: any) {
+          if (error.code === 'P2002') {
+            await ctx.reply('❌ Ja existe um post com esse slug. Tente outro titulo.');
+          } else {
+            await ctx.reply('❌ Erro ao criar post. Tente novamente.');
+          }
+        }
+      } else {
+        // Append content
+        data.blogContent = data.blogContent ? data.blogContent + '\n\n' + text : text;
+        await updateSession(chatId, BotState.WAITING_BLOG_CONTENT, data);
+        await ctx.reply('✅ Conteudo adicionado. Continue escrevendo ou envie /done para finalizar.');
+      }
+      break;
+  }
+});
+
+// Handle blog publish from inline button
+bot.on('callback_query:data', async (ctx) => {
+  const action = ctx.callbackQuery.data;
+
+  if (action.startsWith('publish_blog_')) {
+    const postId = action.replace('publish_blog_', '');
+    
+    try {
+      const post = await prisma.post.update({
+        where: { id: postId },
+        data: { published: true },
+      });
+
+      revalidatePath('/blog');
+      revalidatePath(`/blog/${post.slug}`);
+
+      await ctx.editMessageText(
+        `✅ *Post publicado!*\n\n` +
+        `📝 *${post.title}*\n` +
+        `🔗 /blog/${post.slug}`,
+        { parse_mode: 'Markdown' }
+      );
+      await ctx.answerCallbackQuery({ text: 'Post publicado!' });
+    } catch {
+      await ctx.answerCallbackQuery({ text: 'Erro ao publicar.' });
+    }
+  } else if (action === 'keep_draft') {
+    await ctx.editMessageText(
+      ctx.callbackQuery.message?.text + '\n\n_Mantido como rascunho. Use /posts para ver._',
+      { parse_mode: 'Markdown' }
+    );
+    await ctx.answerCallbackQuery({ text: 'Mantido como rascunho.' });
   }
 });
 
 async function publishProduct(ctx: Context, data: SessionData) {
   try {
-    // Validation
     if (!data.title || !data.price || !data.image || !data.url) {
       await ctx.reply(
         '❌ Dados incompletos! Certifique-se de ter:\n' +
@@ -421,7 +621,6 @@ async function publishProduct(ctx: Context, data: SessionData) {
       return;
     }
 
-    // Save to database
     const product = await prisma.product.create({
       data: {
         title: data.title,
@@ -436,7 +635,6 @@ async function publishProduct(ctx: Context, data: SessionData) {
       },
     });
 
-    // Revalidate the homepage
     revalidatePath('/');
     revalidatePath('/promocoes-do-dia');
 
