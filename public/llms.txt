@@ -1,0 +1,56 @@
+# Captei Ofertas - llms.txt
+
+> Captei Ofertas is a Brazilian affiliate deals platform that aggregates the best promotions, discounts, and coupon codes from major e-commerce stores in Brazil.
+
+## About
+
+Captei Ofertas helps Brazilian consumers find the best deals and save money on their online purchases. We curate promotions from trusted stores like Amazon, Shopee, Magazine Luiza (Magalu), Mercado Livre, and many others.
+
+## Main Features
+
+- Daily deals and promotions from major Brazilian e-commerce stores
+- Coupon codes for additional discounts
+- Product categories for easy browsing
+- Blog with shopping tips and deal alerts
+
+## Site Structure
+
+- `/` - Homepage with featured deals and categories
+- `/promocoes-do-dia` - All current promotions and deals
+- `/ofertas` - Browse deals by category
+- `/ofertas/[category]` - Category-specific deals (e.g., /ofertas/eletronicos)
+- `/oferta/[id]` - Individual product deal page
+- `/blog` - Blog with articles about deals and shopping tips
+- `/blog/[slug]` - Individual blog post
+
+## Content Types
+
+### Products/Deals
+Each deal includes:
+- Product title and image
+- Current price and original price (if discounted)
+- Discount percentage
+- Coupon code (when available)
+- Store name (Amazon, Shopee, Magalu, etc.)
+- Category
+- Affiliate link to the store
+
+### Blog Posts
+Articles about:
+- Shopping tips
+- Deal alerts
+- Product reviews
+- Best times to buy
+
+## Data Format
+
+Products are available through the sitemap at `/sitemap.xml`
+
+## Contact
+
+Website: https://capteiofertas.com.br
+
+## Language
+
+Primary language: Portuguese (Brazil)
+Currency: BRL (Brazilian Real)
