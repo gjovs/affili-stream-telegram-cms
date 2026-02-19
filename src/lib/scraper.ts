@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { getShopeeProduct, isShopeeUrl } from './shopee-api';
 
 export interface ScrapedData {
   title: string | null;
@@ -18,7 +19,8 @@ export async function scrapeUrl(url: string): Promise<ScrapedData> {
     
     // Detect store and use specific scraper
     if (isShopee(finalUrl)) {
-      return await scrapeShopee(finalUrl);
+      // Use Shopee API instead of scraping
+      return await scrapeShopeeWithApi(finalUrl);
     } else if (isAmazon(finalUrl)) {
       return await scrapeAmazon(finalUrl);
     } else if (isMercadoLivre(finalUrl)) {
@@ -76,7 +78,49 @@ function isMagalu(url: string): boolean {
   return url.includes('magazineluiza.com') || url.includes('magalu.com');
 }
 
-// Shopee scraper - extract from URL params and HTML
+// Shopee scraper using API
+async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
+  try {
+    console.log('Fetching Shopee product via API:', url);
+    
+    const product = await getShopeeProduct(url);
+    
+    if (product && product.title && product.price > 0) {
+      console.log('Successfully got Shopee product:', product.title);
+      return {
+        title: cleanTitle(product.title),
+        image: product.image || null,
+        description: null,
+        price: product.price,
+        originalPrice: product.originalPrice || null,
+        success: true,
+      };
+    }
+    
+    // If API returns partial data
+    if (product && product.title) {
+      return {
+        title: cleanTitle(product.title),
+        image: product.image || null,
+        description: null,
+        price: product.price > 0 ? product.price : null,
+        originalPrice: product.originalPrice || null,
+        success: true,
+      };
+    }
+    
+    // Fallback to old scraping method if API fails
+    console.log('Shopee API failed, falling back to scraper');
+    return await scrapeShopee(url);
+    
+  } catch (error) {
+    console.error('Error in scrapeShopeeWithApi:', error);
+    // Fallback to old scraping method
+    return await scrapeShopee(url);
+  }
+}
+
+// Shopee scraper - extract from URL params and HTML (fallback)
 async function scrapeShopee(url: string): Promise<ScrapedData> {
   try {
     // Extract shop_id and item_id from URL
