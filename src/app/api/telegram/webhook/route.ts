@@ -513,13 +513,44 @@ async function showProductDetail(ctx: Context, productId: string, editMessage = 
     .text('⬅️ Voltar', 'prod_page_1');
 
   if (editMessage && ctx.callbackQuery) {
+    // Check if message has photo (caption) or text
+    const msg = ctx.callbackQuery.message;
+    const hasPhoto = msg && 'photo' in msg;
+    
     try {
-      await ctx.editMessageText(message, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      });
+      if (hasPhoto) {
+        await ctx.editMessageCaption({
+          caption: message,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      } else {
+        await ctx.editMessageText(message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      }
     } catch {
-      // Message didn't change
+      // Message didn't change or error - send new message
+      if (product.image) {
+        try {
+          await ctx.replyWithPhoto(product.image, {
+            caption: message,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+        } catch {
+          await ctx.reply(message, {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+        }
+      } else {
+        await ctx.reply(message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      }
     }
     await ctx.answerCallbackQuery();
   } else {
@@ -611,10 +642,28 @@ bot.callbackQuery(/^edit_prod_category_(.+)$/, async (ctx) => {
     .text('❌ Remover categoria', `set_prod_cat_${productId}_null`).row()
     .text('⬅️ Voltar', `refresh_prod_${productId}`);
   
-  await ctx.editMessageText('📂 *Escolha a nova categoria:*', {
-    parse_mode: 'Markdown',
-    reply_markup: categoryKeyboard,
-  });
+  const categoryText = '📂 *Escolha a nova categoria:*';
+  
+  // Check if message has photo (caption) or text
+  const message = ctx.callbackQuery.message;
+  const hasPhoto = message && 'photo' in message;
+  
+  try {
+    if (hasPhoto) {
+      await ctx.editMessageCaption({
+        caption: categoryText,
+        parse_mode: 'Markdown',
+        reply_markup: categoryKeyboard,
+      });
+    } else {
+      await ctx.editMessageText(categoryText, {
+        parse_mode: 'Markdown',
+        reply_markup: categoryKeyboard,
+      });
+    }
+  } catch {
+    await ctx.reply(categoryText, { parse_mode: 'Markdown', reply_markup: categoryKeyboard });
+  }
   await ctx.answerCallbackQuery();
 });
 
@@ -647,11 +696,29 @@ bot.callbackQuery(/^delete_prod_(.+)$/, async (ctx) => {
     .text('✅ Sim, deletar', `confirm_delete_prod_${productId}`)
     .text('❌ Cancelar', `refresh_prod_${productId}`);
   
-  await ctx.editMessageText(
-    '⚠️ *Tem certeza que deseja deletar este produto?*\n\n' +
-    '_Esta acao nao pode ser desfeita._',
-    { parse_mode: 'Markdown', reply_markup: keyboard }
-  );
+  const confirmText = '⚠️ *Tem certeza que deseja deletar este produto?*\n\n_Esta acao nao pode ser desfeita._';
+  
+  // Check if message has photo (caption) or text
+  const message = ctx.callbackQuery.message;
+  const hasPhoto = message && 'photo' in message;
+  
+  try {
+    if (hasPhoto) {
+      await ctx.editMessageCaption({
+        caption: confirmText,
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    } else {
+      await ctx.editMessageText(confirmText, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    }
+  } catch {
+    // Fallback: send new message
+    await ctx.reply(confirmText, { parse_mode: 'Markdown', reply_markup: keyboard });
+  }
   await ctx.answerCallbackQuery();
 });
 
@@ -667,11 +734,26 @@ bot.callbackQuery(/^confirm_delete_prod_(.+)$/, async (ctx) => {
     revalidatePath('/');
     revalidatePath('/promocoes-do-dia');
     
-    await ctx.editMessageText(
-      `🗑️ *Produto deletado!*\n\n` +
-      `_${product.title}_`,
-      { parse_mode: 'Markdown' }
-    );
+    const deleteText = `🗑️ *Produto deletado!*\n\n_${product.title}_`;
+    
+    // Check if message has photo (caption) or text
+    const message = ctx.callbackQuery.message;
+    const hasPhoto = message && 'photo' in message;
+    
+    try {
+      if (hasPhoto) {
+        await ctx.editMessageCaption({
+          caption: deleteText,
+          parse_mode: 'Markdown',
+        });
+      } else {
+        await ctx.editMessageText(deleteText, {
+          parse_mode: 'Markdown',
+        });
+      }
+    } catch {
+      await ctx.reply(deleteText, { parse_mode: 'Markdown' });
+    }
     await ctx.answerCallbackQuery({ text: 'Produto deletado!' });
   } catch {
     await ctx.answerCallbackQuery({ text: 'Erro ao deletar!' });
