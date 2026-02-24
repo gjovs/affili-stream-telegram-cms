@@ -33,6 +33,11 @@ enum BotState {
   // Blog states
   WAITING_BLOG_TITLE = 'WAITING_BLOG_TITLE',
   WAITING_BLOG_CONTENT = 'WAITING_BLOG_CONTENT',
+  // Product edit states
+  EDITING_PRODUCT_TITLE = 'EDITING_PRODUCT_TITLE',
+  EDITING_PRODUCT_PRICE = 'EDITING_PRODUCT_PRICE',
+  EDITING_PRODUCT_ORIGINAL_PRICE = 'EDITING_PRODUCT_ORIGINAL_PRICE',
+  EDITING_PRODUCT_COUPON = 'EDITING_PRODUCT_COUPON',
 }
 
 interface SessionData {
@@ -50,6 +55,8 @@ interface SessionData {
   blogTitle?: string;
   blogContent?: string;
   blogSlug?: string;
+  // Product edit data
+  editingProductId?: string;
 }
 
 // Check if user is admin
@@ -327,6 +334,350 @@ bot.callbackQuery(/^remove_group_(-?\d+)$/, async (ctx) => {
   }
 });
 
+// ==================== PRODUCT CRUD ====================
+
+// List products command
+bot.command('produtos', async (ctx) => {
+  const page = 1;
+  await showProductList(ctx, page);
+});
+
+// Pagination for products
+bot.hears(/^\/produtos_(\d+)$/, async (ctx) => {
+  const page = parseInt(ctx.match[1]);
+  await showProductList(ctx, page);
+});
+
+async function showProductList(ctx: Context, page: number) {
+  const perPage = 5;
+  const skip = (page - 1) * perPage;
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: perPage,
+    }),
+    prisma.product.count(),
+  ]);
+
+  if (products.length === 0 && page === 1) {
+    await ctx.reply(
+      '📭 *Nenhum produto cadastrado*\n\n' +
+      'Envie um link de produto para cadastrar.',
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const totalPages = Math.ceil(total / perPage);
+
+  let message = `📦 *Produtos cadastrados* (${total} total)\n`;
+  message += `Pagina ${page}/${totalPages}\n\n`;
+
+  for (const product of products) {
+    const priceStr = `R$ ${product.price.toFixed(2)}`;
+    const discount = product.originalPrice 
+      ? Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100) + '% OFF'
+      : '';
+    
+    message += `*${product.title.substring(0, 40)}${product.title.length > 40 ? '...' : ''}*\n`;
+    message += `💰 ${priceStr} ${discount ? `🔥 ${discount}` : ''}\n`;
+    message += `🏪 ${product.storeName}\n`;
+    message += `🆔 \`${product.id}\`\n\n`;
+  }
+
+  message += '_Para gerenciar um produto:_\n';
+  message += '`/produto [id]`\n\n';
+
+  // Pagination buttons
+  const keyboard = new InlineKeyboard();
+  
+  if (page > 1) {
+    keyboard.text('⬅️ Anterior', `prod_page_${page - 1}`);
+  }
+  if (page < totalPages) {
+    keyboard.text('Proximo ➡️', `prod_page_${page + 1}`);
+  }
+
+  await ctx.reply(message, { 
+    parse_mode: 'Markdown',
+    reply_markup: keyboard.row().text('🔄 Atualizar', `prod_page_${page}`)
+  });
+}
+
+// Product pagination callbacks
+bot.callbackQuery(/^prod_page_(\d+)$/, async (ctx) => {
+  const page = parseInt(ctx.match[1]);
+  
+  const perPage = 5;
+  const skip = (page - 1) * perPage;
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: perPage,
+    }),
+    prisma.product.count(),
+  ]);
+
+  const totalPages = Math.ceil(total / perPage);
+
+  let message = `📦 *Produtos cadastrados* (${total} total)\n`;
+  message += `Pagina ${page}/${totalPages}\n\n`;
+
+  for (const product of products) {
+    const priceStr = `R$ ${product.price.toFixed(2)}`;
+    const discount = product.originalPrice 
+      ? Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100) + '% OFF'
+      : '';
+    
+    message += `*${product.title.substring(0, 40)}${product.title.length > 40 ? '...' : ''}*\n`;
+    message += `💰 ${priceStr} ${discount ? `🔥 ${discount}` : ''}\n`;
+    message += `🏪 ${product.storeName}\n`;
+    message += `🆔 \`${product.id}\`\n\n`;
+  }
+
+  message += '_Para gerenciar um produto:_\n';
+  message += '`/produto [id]`\n\n';
+
+  const keyboard = new InlineKeyboard();
+  
+  if (page > 1) {
+    keyboard.text('⬅️ Anterior', `prod_page_${page - 1}`);
+  }
+  if (page < totalPages) {
+    keyboard.text('Proximo ➡️', `prod_page_${page + 1}`);
+  }
+
+  try {
+    await ctx.editMessageText(message, { 
+      parse_mode: 'Markdown',
+      reply_markup: keyboard.row().text('🔄 Atualizar', `prod_page_${page}`)
+    });
+  } catch {
+    // Message didn't change
+  }
+  await ctx.answerCallbackQuery();
+});
+
+// View/manage single product
+bot.hears(/^\/produto\s+(.+)$/, async (ctx) => {
+  const productId = ctx.match[1].trim();
+  await showProductDetail(ctx, productId);
+});
+
+async function showProductDetail(ctx: Context, productId: string, editMessage = false) {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+  });
+
+  if (!product) {
+    if (editMessage && ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({ text: 'Produto nao encontrado!' });
+    } else {
+      await ctx.reply('❌ Produto nao encontrado. Verifique o ID.');
+    }
+    return;
+  }
+
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://capteiofertas.com.br';
+  
+  let message = `📦 *Detalhes do Produto*\n\n`;
+  message += `📝 *Titulo:* ${product.title}\n\n`;
+  message += `💰 *Preco:* R$ ${product.price.toFixed(2)}\n`;
+  if (product.originalPrice) {
+    const discount = Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100);
+    message += `💵 *Preco Original:* R$ ${product.originalPrice.toFixed(2)} (${discount}% OFF)\n`;
+  }
+  message += `🏪 *Loja:* ${product.storeName}\n`;
+  if (product.category) message += `📂 *Categoria:* ${product.category}\n`;
+  if (product.couponCode) message += `🎟️ *Cupom:* ${product.couponCode}\n`;
+  message += `\n🔗 *Link:* ${siteUrl}/oferta/${product.id}\n`;
+  message += `🆔 *ID:* \`${product.id}\`\n`;
+  message += `📅 *Criado:* ${product.createdAt.toLocaleDateString('pt-BR')}`;
+
+  const keyboard = new InlineKeyboard()
+    .text('✏️ Titulo', `edit_prod_title_${product.id}`)
+    .text('💰 Preco', `edit_prod_price_${product.id}`)
+    .row()
+    .text('💵 Preco Original', `edit_prod_origprice_${product.id}`)
+    .text('🎟️ Cupom', `edit_prod_coupon_${product.id}`)
+    .row()
+    .text('📂 Categoria', `edit_prod_category_${product.id}`)
+    .row()
+    .text('🗑️ Deletar', `delete_prod_${product.id}`)
+    .text('🔄 Atualizar', `refresh_prod_${product.id}`)
+    .row()
+    .text('⬅️ Voltar', 'prod_page_1');
+
+  if (editMessage && ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(message, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    } catch {
+      // Message didn't change
+    }
+    await ctx.answerCallbackQuery();
+  } else {
+    if (product.image) {
+      try {
+        await ctx.replyWithPhoto(product.image, {
+          caption: message,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      } catch {
+        await ctx.reply(message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      }
+    } else {
+      await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    }
+  }
+}
+
+// Refresh product detail
+bot.callbackQuery(/^refresh_prod_(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  await showProductDetail(ctx, productId, true);
+});
+
+// Edit product title
+bot.callbackQuery(/^edit_prod_title_(.+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  
+  const productId = ctx.match[1];
+  await updateSession(chatId, BotState.EDITING_PRODUCT_TITLE, { editingProductId: productId });
+  await ctx.reply('✏️ Digite o novo *titulo* do produto:', { parse_mode: 'Markdown' });
+  await ctx.answerCallbackQuery();
+});
+
+// Edit product price
+bot.callbackQuery(/^edit_prod_price_(.+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  
+  const productId = ctx.match[1];
+  await updateSession(chatId, BotState.EDITING_PRODUCT_PRICE, { editingProductId: productId });
+  await ctx.reply('💰 Digite o novo *preco* (ex: 99.90):', { parse_mode: 'Markdown' });
+  await ctx.answerCallbackQuery();
+});
+
+// Edit product original price
+bot.callbackQuery(/^edit_prod_origprice_(.+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  
+  const productId = ctx.match[1];
+  await updateSession(chatId, BotState.EDITING_PRODUCT_ORIGINAL_PRICE, { editingProductId: productId });
+  await ctx.reply('💵 Digite o novo *preco original* (ex: 199.90):\n\n_Envie 0 para remover_', { parse_mode: 'Markdown' });
+  await ctx.answerCallbackQuery();
+});
+
+// Edit product coupon
+bot.callbackQuery(/^edit_prod_coupon_(.+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  
+  const productId = ctx.match[1];
+  await updateSession(chatId, BotState.EDITING_PRODUCT_COUPON, { editingProductId: productId });
+  await ctx.reply('🎟️ Digite o *codigo do cupom*:\n\n_Envie "remover" para remover o cupom_', { parse_mode: 'Markdown' });
+  await ctx.answerCallbackQuery();
+});
+
+// Edit product category
+bot.callbackQuery(/^edit_prod_category_(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  
+  const categoryKeyboard = new InlineKeyboard()
+    .text('📱 Eletronicos', `set_prod_cat_${productId}_Eletronicos`).row()
+    .text('👕 Moda', `set_prod_cat_${productId}_Moda`).row()
+    .text('🏠 Casa', `set_prod_cat_${productId}_Casa`).row()
+    .text('🎮 Games', `set_prod_cat_${productId}_Games`).row()
+    .text('📚 Livros', `set_prod_cat_${productId}_Livros`).row()
+    .text('💄 Beleza', `set_prod_cat_${productId}_Beleza`).row()
+    .text('🍽️ Alimentos', `set_prod_cat_${productId}_Alimentos`).row()
+    .text('⚽ Esportes', `set_prod_cat_${productId}_Esportes`).row()
+    .text('❌ Remover categoria', `set_prod_cat_${productId}_null`).row()
+    .text('⬅️ Voltar', `refresh_prod_${productId}`);
+  
+  await ctx.editMessageText('📂 *Escolha a nova categoria:*', {
+    parse_mode: 'Markdown',
+    reply_markup: categoryKeyboard,
+  });
+  await ctx.answerCallbackQuery();
+});
+
+// Set product category
+bot.callbackQuery(/^set_prod_cat_(.+)_(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  const category = ctx.match[2] === 'null' ? null : ctx.match[2];
+  
+  try {
+    await prisma.product.update({
+      where: { id: productId },
+      data: { category },
+    });
+    
+    revalidatePath('/');
+    revalidatePath(`/oferta/${productId}`);
+    
+    await ctx.answerCallbackQuery({ text: category ? `Categoria: ${category}` : 'Categoria removida!' });
+    await showProductDetail(ctx, productId, true);
+  } catch {
+    await ctx.answerCallbackQuery({ text: 'Erro ao atualizar!' });
+  }
+});
+
+// Delete product confirmation
+bot.callbackQuery(/^delete_prod_(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  
+  const keyboard = new InlineKeyboard()
+    .text('✅ Sim, deletar', `confirm_delete_prod_${productId}`)
+    .text('❌ Cancelar', `refresh_prod_${productId}`);
+  
+  await ctx.editMessageText(
+    '⚠️ *Tem certeza que deseja deletar este produto?*\n\n' +
+    '_Esta acao nao pode ser desfeita._',
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+  await ctx.answerCallbackQuery();
+});
+
+// Confirm delete product
+bot.callbackQuery(/^confirm_delete_prod_(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  
+  try {
+    const product = await prisma.product.delete({
+      where: { id: productId },
+    });
+    
+    revalidatePath('/');
+    revalidatePath('/promocoes-do-dia');
+    
+    await ctx.editMessageText(
+      `🗑️ *Produto deletado!*\n\n` +
+      `_${product.title}_`,
+      { parse_mode: 'Markdown' }
+    );
+    await ctx.answerCallbackQuery({ text: 'Produto deletado!' });
+  } catch {
+    await ctx.answerCallbackQuery({ text: 'Erro ao deletar!' });
+  }
+});
+
 // Helper to get/update session
 async function getSession(chatId: number) {
   const session = await prisma.botSession.findUnique({
@@ -366,7 +717,9 @@ bot.command('start', async (ctx) => {
   await ctx.reply(
     '👋 Ola! Sou o bot de cadastro de ofertas e blog.\n\n' +
     '*Ofertas:*\n' +
-    'Envie um link de produto para cadastrar uma oferta.\n\n' +
+    'Envie um link de produto para cadastrar uma oferta.\n' +
+    '/produtos - Listar produtos cadastrados\n' +
+    '/produto [id] - Ver/editar/deletar produto\n\n' +
     '*Blog:*\n' +
     '/newpost - Criar novo post\n' +
     '/posts - Listar posts\n\n' +
@@ -387,15 +740,17 @@ bot.command('help', async (ctx) => {
     '*Ofertas:*\n' +
     '• Envie um link de produto para cadastrar\n' +
     '• O bot extrai os dados automaticamente\n' +
-    '• Edite e publique com os botoes\n\n' +
+    '• Edite e publique com os botoes\n' +
+    '/produtos - Listar todos os produtos\n' +
+    '/produto [id] - Ver detalhes e editar\n\n' +
     '*Blog:*\n' +
     '/newpost - Criar novo post no blog\n' +
     '/posts - Listar todos os posts\n' +
-    '/publish\\_post\\_ID - Publicar post (ex: /publish\\_post\\_abc123)\n' +
+    '/publish\\_post\\_ID - Publicar post\n' +
     '/delete\\_post\\_ID - Deletar post\n\n' +
     '*Grupos (broadcast):*\n' +
     '/grupos - Listar grupos onde o bot esta\n' +
-    '/grupo [n] - Configurar notificacoes do grupo\n\n' +
+    '/grupo [n] - Configurar notificacoes\n\n' +
     '*Geral:*\n' +
     '/start - Menu inicial\n' +
     '/cancel - Cancelar operacao\n' +
@@ -796,6 +1151,121 @@ bot.on('message:text', async (ctx) => {
   const text = ctx.message.text;
 
   switch (session.state) {
+    // Product edit states
+    case BotState.EDITING_PRODUCT_TITLE: {
+      if (!data.editingProductId) {
+        await ctx.reply('❌ Erro: produto nao encontrado. Tente novamente.');
+        await clearSession(chatId);
+        return;
+      }
+      
+      try {
+        await prisma.product.update({
+          where: { id: data.editingProductId },
+          data: { title: text },
+        });
+        
+        revalidatePath('/');
+        revalidatePath(`/oferta/${data.editingProductId}`);
+        
+        await ctx.reply(`✅ Titulo atualizado!\n\nUse /produto ${data.editingProductId} para ver o produto.`);
+        await clearSession(chatId);
+      } catch {
+        await ctx.reply('❌ Erro ao atualizar. Verifique o ID.');
+      }
+      break;
+    }
+
+    case BotState.EDITING_PRODUCT_PRICE: {
+      if (!data.editingProductId) {
+        await ctx.reply('❌ Erro: produto nao encontrado. Tente novamente.');
+        await clearSession(chatId);
+        return;
+      }
+      
+      const newPrice = parseFloat(text.replace(/[^\d.,]/g, '').replace(',', '.'));
+      if (isNaN(newPrice) || newPrice <= 0) {
+        await ctx.reply('❌ Preco invalido. Digite novamente (ex: 99.90):');
+        return;
+      }
+      
+      try {
+        await prisma.product.update({
+          where: { id: data.editingProductId },
+          data: { price: newPrice },
+        });
+        
+        revalidatePath('/');
+        revalidatePath(`/oferta/${data.editingProductId}`);
+        
+        await ctx.reply(`✅ Preco atualizado: R$ ${newPrice.toFixed(2)}\n\nUse /produto ${data.editingProductId} para ver o produto.`);
+        await clearSession(chatId);
+      } catch {
+        await ctx.reply('❌ Erro ao atualizar. Verifique o ID.');
+      }
+      break;
+    }
+
+    case BotState.EDITING_PRODUCT_ORIGINAL_PRICE: {
+      if (!data.editingProductId) {
+        await ctx.reply('❌ Erro: produto nao encontrado. Tente novamente.');
+        await clearSession(chatId);
+        return;
+      }
+      
+      const newOriginalPrice = parseFloat(text.replace(/[^\d.,]/g, '').replace(',', '.'));
+      if (isNaN(newOriginalPrice)) {
+        await ctx.reply('❌ Preco invalido. Digite novamente (ex: 199.90):');
+        return;
+      }
+      
+      try {
+        await prisma.product.update({
+          where: { id: data.editingProductId },
+          data: { originalPrice: newOriginalPrice === 0 ? null : newOriginalPrice },
+        });
+        
+        revalidatePath('/');
+        revalidatePath(`/oferta/${data.editingProductId}`);
+        
+        const msg = newOriginalPrice === 0 
+          ? '✅ Preco original removido!' 
+          : `✅ Preco original atualizado: R$ ${newOriginalPrice.toFixed(2)}`;
+        await ctx.reply(`${msg}\n\nUse /produto ${data.editingProductId} para ver o produto.`);
+        await clearSession(chatId);
+      } catch {
+        await ctx.reply('❌ Erro ao atualizar. Verifique o ID.');
+      }
+      break;
+    }
+
+    case BotState.EDITING_PRODUCT_COUPON: {
+      if (!data.editingProductId) {
+        await ctx.reply('❌ Erro: produto nao encontrado. Tente novamente.');
+        await clearSession(chatId);
+        return;
+      }
+      
+      const coupon = text.toLowerCase() === 'remover' ? null : text.toUpperCase();
+      
+      try {
+        await prisma.product.update({
+          where: { id: data.editingProductId },
+          data: { couponCode: coupon },
+        });
+        
+        revalidatePath('/');
+        revalidatePath(`/oferta/${data.editingProductId}`);
+        
+        const msg = coupon ? `✅ Cupom atualizado: ${coupon}` : '✅ Cupom removido!';
+        await ctx.reply(`${msg}\n\nUse /produto ${data.editingProductId} para ver o produto.`);
+        await clearSession(chatId);
+      } catch {
+        await ctx.reply('❌ Erro ao atualizar. Verifique o ID.');
+      }
+      break;
+    }
+
     // Product states
     case BotState.WAITING_TITLE:
       data.title = text;
