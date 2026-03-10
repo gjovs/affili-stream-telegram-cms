@@ -76,12 +76,9 @@ function isMagalu(url: string): boolean {
 // Shopee scraper using API
 async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
   try {
-    console.log('Fetching Shopee product via API:', url);
-    
     const product = await getShopeeProduct(url);
     
     if (product && product.title && product.price > 0) {
-      console.log('Successfully got Shopee product:', product.title);
       return {
         title: cleanTitle(product.title),
         image: product.image || null,
@@ -92,7 +89,6 @@ async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
       };
     }
     
-    // If API returns partial data
     if (product && product.title) {
       return {
         title: cleanTitle(product.title),
@@ -111,94 +107,68 @@ async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
   }
 }
 
-// Shopee scraper - extract from URL params and HTML (fallback)
 async function scrapeShopee(url: string): Promise<ScrapedData> {
   try {
-    const urlMatch = url.match(/\/(\d+)\/(\d+)/);
-    const shopId = urlMatch?.[1];
-    const itemId = urlMatch?.[2];
-
-    if (!shopId || !itemId) {
-      const itemMatch = url.match(/[?&]itemid=(\d+)/i);
-      const shopMatch = url.match(/[?&]shopid=(\d+)/i);
-
-      if (!itemMatch || !shopMatch) {
-        return {
-          title: null,
-          image: null,
-          description: null,
-          price: null,
-          originalPrice: null,
-          success: true,
-        };
-      }
-    }
-
-    // Fetch HTML to try extracting any available data
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9',
-      },
-      redirect: 'follow',
-    });
-
+    const client = new Impit({ browser: 'chrome' });
+    const response = await client.fetch(url);
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // Try to extract from meta tags
-    let title = $('meta[property="og:title"]').attr('content') ||
-                $('meta[name="twitter:title"]').attr('content') ||
-                $('title').text();
-    
-    let image = $('meta[property="og:image"]').attr('content') ||
-                $('meta[name="twitter:image"]').attr('content');
+    let title: string | null =
+      $('meta[property="og:title"]').attr('content') ||
+      $('meta[name="twitter:title"]').attr('content') ||
+      null;
 
-    // Try to extract from initial state JSON in script tags
-    const scripts = $('script').toArray();
-    for (const script of scripts) {
-      const content = $(script).html() || '';
-      
-      // Look for item data in JSON
-      const itemNameMatch = content.match(/"item_basic":\s*\{[^}]*"name"\s*:\s*"([^"]+)"/);
-      if (itemNameMatch) {
-        title = itemNameMatch[1];
-      }
+    let image: string | null =
+      $('meta[property="og:image"]').attr('content') ||
+      $('meta[name="twitter:image"]').attr('content') ||
+      null;
 
-      const priceMatch = content.match(/"price"\s*:\s*(\d+)/);
-      const imageMatch = content.match(/"image"\s*:\s*"([^"]+)"/);
-      
-      if (imageMatch && !image) {
-        const imgHash = imageMatch[1];
-        if (!imgHash.startsWith('http')) {
-          image = `https://down-br.img.susercontent.com/file/${imgHash}`;
-        } else {
-          image = imgHash;
+    if (!title) {
+      const nameMatch = html.match(/"name"\s*:\s*"([^"]{10,200})"/);
+      if (nameMatch) title = nameMatch[1];
+    }
+
+    if (!image) {
+      const imgMatch = html.match(/https:\/\/down-br\.img\.susercontent\.com\/file\/[a-zA-Z0-9_-]+/);
+      if (imgMatch) image = imgMatch[0];
+    }
+
+    // Shopee prices in HTML are micro-units (÷100000); match only values ≥5 digits to skip non-price numbers
+    let price: number | null = null;
+    const pricePatterns = [
+      /"current_price"\s*:\s*(\d{5,})/,
+      /"price_min"\s*:\s*(\d{5,})/,
+      /"price"\s*:\s*(\d{5,})/,
+      /"price_before_discount"\s*:\s*(\d{5,})/,
+    ];
+    for (const pattern of pricePatterns) {
+      const m = html.match(pattern);
+      if (m) {
+        const candidate = parseInt(m[1]) / 100000;
+        if (candidate > 0 && candidate < 1000000) {
+          price = candidate;
+          break;
         }
-      }
-
-      if (priceMatch) {
-        const price = parseInt(priceMatch[1]) / 100000; // Shopee stores price in micro units
-        return {
-          title: title ? cleanTitle(title) : null,
-          image: image || null,
-          description: null,
-          price: price > 0 ? price : null,
-          originalPrice: null,
-          success: true,
-        };
       }
     }
 
-    // Shopee requires JS to render, return partial data
+    let originalPrice: number | null = null;
+    const origMatch = html.match(/"price_before_discount"\s*:\s*(\d{5,})/);
+    if (origMatch) {
+      const candidate = parseInt(origMatch[1]) / 100000;
+      if (candidate > 0 && price !== null && candidate > price) {
+        originalPrice = candidate;
+      }
+    }
+
     return {
       title: title ? cleanTitle(title) : null,
       image: image || null,
       description: null,
-      price: null,
-      originalPrice: null,
-      success: true, // Partial success - let user fill in the rest
+      price,
+      originalPrice,
+      success: true,
     };
 
   } catch (error) {

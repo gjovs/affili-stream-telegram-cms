@@ -67,15 +67,12 @@ export async function getShopeeProductFromApi(url: string): Promise<ShopeeProduc
   const ids = extractShopeeIds(url);
   
   if (!ids) {
-    console.error('Could not extract Shopee IDs from URL:', url);
     return null;
   }
   
   const { shopId, itemId } = ids;
   
   try {
-    // Use the public Shopee API endpoint for item details
-    // This endpoint is available for affiliate partners
     const timestamp = Math.floor(Date.now() / 1000);
     const path = '/api/v2/product/get_item_base_info';
     const sign = generateSignature(path, timestamp);
@@ -96,25 +93,22 @@ export async function getShopeeProductFromApi(url: string): Promise<ShopeeProduc
     });
     
     if (!response.ok) {
-      console.error('Shopee API error:', response.status, await response.text());
       return null;
     }
     
     const data = await response.json();
     
     if (data.error) {
-      console.error('Shopee API returned error:', data.error, data.message);
       return null;
     }
     
     const item = data.response?.item_list?.[0];
     
     if (!item) {
-      console.error('No item found in Shopee API response');
       return null;
     }
     
-    // Extract price (Shopee prices are in cents)
+    // Shopee API prices are micro-units (÷100000)
     const price = (item.price_info?.current_price || item.price_info?.min_price || 0) / 100000;
     const originalPrice = (item.price_info?.original_price || 0) / 100000;
     
@@ -126,8 +120,7 @@ export async function getShopeeProductFromApi(url: string): Promise<ShopeeProduc
       itemId,
       shopId,
     };
-  } catch (error) {
-    console.error('Error fetching from Shopee API:', error);
+  } catch {
     return null;
   }
 }
@@ -140,7 +133,6 @@ export async function getShopeeProductFromInternalApi(url: string): Promise<Shop
   const ids = extractShopeeIds(url);
   
   if (!ids) {
-    console.error('Could not extract Shopee IDs from URL:', url);
     return null;
   }
   
@@ -163,24 +155,21 @@ export async function getShopeeProductFromInternalApi(url: string): Promise<Shop
     });
     
     if (!response.ok) {
-      console.error('Shopee internal API error:', response.status);
       return null;
     }
     
     const data = await response.json();
     
     if (data.error || !data.data) {
-      console.error('Shopee internal API returned error:', data.error);
       return null;
     }
     
     const item = data.data;
     
-    // Shopee prices are in cents (multiply by 100000 in their system)
+    // Shopee internal API prices are micro-units (÷100000)
     const price = (item.price || item.price_min || 0) / 100000;
     const originalPrice = (item.price_before_discount || 0) / 100000;
     
-    // Get the main image
     const imageId = item.image || item.images?.[0] || '';
     const imageUrl = imageId ? `https://down-br.img.susercontent.com/file/${imageId}` : '';
     
@@ -192,8 +181,7 @@ export async function getShopeeProductFromInternalApi(url: string): Promise<Shop
       itemId,
       shopId,
     };
-  } catch (error) {
-    console.error('Error fetching from Shopee internal API:', error);
+  } catch {
     return null;
   }
 }
@@ -203,24 +191,19 @@ export async function getShopeeProductFromInternalApi(url: string): Promise<Shop
  * Tries the internal API first (more reliable), then falls back to partner API
  */
 export async function getShopeeProduct(url: string): Promise<ShopeeProductInfo | null> {
-  // Try internal API first (more reliable for public product data)
   const internalResult = await getShopeeProductFromInternalApi(url);
   
   if (internalResult && internalResult.title && internalResult.price > 0) {
-    console.log('Got Shopee product from internal API:', internalResult.title);
     return internalResult;
   }
   
-  // Fall back to partner API if internal API fails
   if (SHOPEE_PARTNER_ID && SHOPEE_PARTNER_KEY) {
     const apiResult = await getShopeeProductFromApi(url);
     if (apiResult && apiResult.title) {
-      console.log('Got Shopee product from partner API:', apiResult.title);
       return apiResult;
     }
   }
   
-  console.error('Could not fetch Shopee product from any source');
   return null;
 }
 
