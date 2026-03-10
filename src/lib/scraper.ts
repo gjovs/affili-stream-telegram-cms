@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { Impit } from 'impit';
 import { getShopeeProduct, isShopeeUrl } from './shopee-api';
 
 export interface ScrapedData {
@@ -226,48 +227,48 @@ async function scrapeShopee(url: string): Promise<ScrapedData> {
   }
 }
 
-// Amazon scraper - use mobile site for better scraping
 async function scrapeAmazon(url: string): Promise<ScrapedData> {
+  const asinMatch = url.match(/\/dp\/([A-Z0-9]{10})/i) ||
+                    url.match(/\/gp\/product\/([A-Z0-9]{10})/i) ||
+                    url.match(/\/d\/([A-Z0-9]{10})/i);
+
+  const asin = asinMatch?.[1];
+  const primaryUrl = asin
+    ? `https://www.amazon.com.br/dp/${asin}?th=1&psc=1`
+    : url;
+  const fallbackUrl = asin
+    ? `https://www.amazon.com.br/gp/product/${asin}/ref=ox_sc_act_title_1`
+    : null;
+
+  const client = new Impit({ browser: 'chrome' });
+
+  const isAmazonBlocked = (body: string) =>
+    body.includes('validateCaptcha') ||
+    body.includes('api-services-support@amazon.com') ||
+    body.includes('Enter the characters you see below') ||
+    body.includes('Sorry, we just need to make sure you');
+
   try {
-    // Extract ASIN from URL
-    const asinMatch = url.match(/\/dp\/([A-Z0-9]{10})/i) || 
-                      url.match(/\/gp\/product\/([A-Z0-9]{10})/i) ||
-                      url.match(/\/d\/([A-Z0-9]{10})/i);
-    
-    let finalUrl = url;
-    if (asinMatch) {
-      // Use mobile site which is easier to scrape
-      finalUrl = `https://www.amazon.com.br/dp/${asinMatch[1]}`;
+    let html: string;
+    let fetchedUrl = primaryUrl;
+
+    try {
+      const response = await client.fetch(primaryUrl);
+      html = await response.text();
+    } catch {
+      if (!fallbackUrl) throw new Error('Amazon bloqueou a requisição. Por favor, adicione os dados manualmente.');
+      const response = await client.fetch(fallbackUrl);
+      html = await response.text();
+      fetchedUrl = fallbackUrl;
     }
 
-    const response = await fetch(finalUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-      },
-      redirect: 'follow',
-    });
-
-    if (!response.ok) {
-      // Amazon might be blocking - try to extract from original URL params
-      return {
-        title: null,
-        image: null,
-        description: null,
-        price: null,
-        originalPrice: null,
-        success: false,
-        error: 'Amazon bloqueou a requisição. Por favor, adicione os dados manualmente.',
-      };
+    if (isAmazonBlocked(html) && fallbackUrl && fetchedUrl === primaryUrl) {
+      const response = await client.fetch(fallbackUrl);
+      html = await response.text();
+      fetchedUrl = fallbackUrl;
     }
 
-    const html = await response.text();
-    
-    // Check for CAPTCHA
-    if (html.includes('validateCaptcha') || html.includes('robot')) {
+    if (isAmazonBlocked(html)) {
       return {
         title: null,
         image: null,
@@ -281,102 +282,79 @@ async function scrapeAmazon(url: string): Promise<ScrapedData> {
 
     const $ = cheerio.load(html);
 
-    // Extract title
-    const title = $('#productTitle').text().trim() ||
-                  $('meta[property="og:title"]').attr('content') ||
-                  $('meta[name="title"]').attr('content') ||
-                  $('title').text();
+    const title =
+      $('#productTitle').text().trim() ||
+      $('meta[property="og:title"]').attr('content') ||
+      $('meta[name="title"]').attr('content') ||
+      $('title').text();
 
-    // Extract image - multiple fallbacks
-    let image = $('meta[property="og:image"]').attr('content') ||
-                $('#landingImage').attr('src') ||
-                $('#imgBlkFront').attr('src') ||
-                $('img#landingImage').attr('data-old-hires') ||
-                $('.a-dynamic-image').first().attr('src');
+    let image =
+      $('meta[property="og:image"]').attr('content') ||
+      $('#landingImage').attr('src') ||
+      $('#imgBlkFront').attr('src') ||
+      $('img#landingImage').attr('data-old-hires') ||
+      $('.a-dynamic-image').first().attr('src');
 
-    // Try to get high-res image from data attribute
     const dynamicImageData = $('[data-a-dynamic-image]').attr('data-a-dynamic-image');
     if (dynamicImageData) {
       try {
-        const imageObj = JSON.parse(dynamicImageData);
+        const imageObj = JSON.parse(dynamicImageData) as Record<string, [number, number]>;
         const images = Object.keys(imageObj);
         if (images.length > 0) {
-          // Get the largest image
-          image = images.reduce((a, b) => {
-            const sizeA = imageObj[a]?.[0] || 0;
-            const sizeB = imageObj[b]?.[0] || 0;
-            return sizeA > sizeB ? a : b;
-          });
+          image = images.reduce((a, b) => (imageObj[a]?.[0] ?? 0) > (imageObj[b]?.[0] ?? 0) ? a : b);
         }
-      } catch {
-        // Ignore JSON parse errors
-      }
+      } catch (_) { void _; }
     }
 
-    // Extract price
     let price: number | null = null;
     let originalPrice: number | null = null;
 
-    // Try various price selectors
     const priceWhole = $('.a-price-whole').first().text();
     const priceFraction = $('.a-price-fraction').first().text();
-    
     if (priceWhole) {
-      const priceText = priceWhole.replace(/[^\d]/g, '') + '.' + (priceFraction || '00').replace(/[^\d]/g, '');
-      price = parseFloat(priceText);
+      price = parseFloat(
+        priceWhole.replace(/[^\d]/g, '') + '.' + (priceFraction || '00').replace(/[^\d]/g, '')
+      );
     }
 
-    // Alternative price patterns
     if (!price) {
-      const priceText = $('#priceblock_ourprice').text() ||
-                        $('#priceblock_dealprice').text() ||
-                        $('.a-price .a-offscreen').first().text() ||
-                        $('[data-a-color="price"] .a-offscreen').first().text();
-      
-      if (priceText) {
-        price = parsePrice(priceText);
-      }
+      const priceText =
+        $('#priceblock_ourprice').text() ||
+        $('#priceblock_dealprice').text() ||
+        $('.a-price .a-offscreen').first().text() ||
+        $('[data-a-color="price"] .a-offscreen').first().text();
+      if (priceText) price = parsePrice(priceText);
     }
 
-    // Try to get original price (list price)
-    const listPriceText = $('.a-text-price .a-offscreen').first().text() ||
-                          $('#listPrice').text() ||
-                          $('.a-price[data-a-strike="true"] .a-offscreen').first().text();
-    
-    if (listPriceText) {
-      originalPrice = parsePrice(listPriceText);
-    }
+    const listPriceText =
+      $('.a-text-price .a-offscreen').first().text() ||
+      $('#listPrice').text() ||
+      $('.a-price[data-a-strike="true"] .a-offscreen').first().text();
+    if (listPriceText) originalPrice = parsePrice(listPriceText);
 
-    // Try JSON-LD
     const jsonLd = $('script[type="application/ld+json"]').toArray();
     for (const script of jsonLd) {
       try {
-        const data = JSON.parse($(script).html() || '');
+        const data = JSON.parse($(script).html() || '') as {
+          '@type'?: string;
+          image?: string | string[];
+          offers?: { price?: number | string };
+        };
         if (data['@type'] === 'Product') {
-          if (!title && data.name) {
-            // title is already set above
-          }
-          if (!image && data.image) {
-            image = Array.isArray(data.image) ? data.image[0] : data.image;
-          }
-          if (!price && data.offers?.price) {
-            price = parseFloat(data.offers.price);
-          }
+          if (!image && data.image) image = Array.isArray(data.image) ? data.image[0] : data.image;
+          if (!price && data.offers?.price) price = parseFloat(String(data.offers.price));
         }
-      } catch {
-        // Ignore JSON parse errors
-      }
+      } catch (_) { void _; }
     }
 
     return {
       title: title ? cleanTitle(title) : null,
-      image: image ? normalizeImageUrl(image, finalUrl) : null,
+      image: image ? normalizeImageUrl(image, fetchedUrl) : null,
       description: null,
       price: price && price > 0 ? price : null,
       originalPrice: originalPrice && originalPrice > 0 ? originalPrice : null,
       success: true,
     };
-
   } catch (error) {
     return {
       title: null,
