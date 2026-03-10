@@ -782,6 +782,53 @@ async function clearSession(chatId: number) {
   }).catch(() => {});
 }
 
+async function sendProductPreview(ctx: Context, data: SessionData) {
+  let message = '📦 *Dados do produto:*\n\n';
+  message += `🏪 Loja: ${data.storeName || 'Nao definida'}\n`;
+  message += `📝 Titulo: ${data.title || '❌ Nao definido'}\n`;
+  message += `💰 Preco: ${data.price ? `R$ ${data.price.toFixed(2)}` : '❌ Nao definido'}\n`;
+  if (data.originalPrice) {
+    const discount = Math.round(((data.originalPrice - (data.price || 0)) / data.originalPrice) * 100);
+    message += `💵 Preco Original: R$ ${data.originalPrice.toFixed(2)} (${discount}% OFF)\n`;
+  }
+  if (data.couponCode) {
+    message += `🎟️ Cupom: ${data.couponCode}\n`;
+  }
+  if (data.category) {
+    message += `📂 Categoria: ${data.category}\n`;
+  }
+  message += `🖼️ Imagem: ${data.image ? '✅ Definida' : '❌ Nao definida'}\n\n`;
+  message += 'Edite os campos ou publique:';
+
+  const keyboard = new InlineKeyboard();
+
+  keyboard.text(data.title ? '✏️ Editar Titulo' : '✏️ Adicionar Titulo', 'edit_title').row();
+  keyboard.text(data.price ? '✏️ Editar Preco' : '✏️ Adicionar Preco', 'edit_price').row();
+  keyboard.text('💵 Preco Original', 'edit_original_price').row();
+  keyboard.text(data.couponCode ? `🎟️ Editar Cupom (${data.couponCode})` : '🎟️ Adicionar Cupom', 'add_coupon').row();
+  keyboard.text('📂 Adicionar Categoria', 'add_category').row();
+  keyboard.text(data.image ? '📸 Trocar Imagem' : '📸 Enviar Imagem', 'edit_image').row();
+  keyboard.text('✅ Publicar', 'publish').text('❌ Cancelar', 'cancel');
+
+  if (data.image) {
+    try {
+      await ctx.replyWithPhoto(data.image, {
+        caption: message,
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+      return;
+    } catch {
+      // photo URL invalid or unavailable — fall through to text reply
+    }
+  }
+
+  await ctx.reply(message, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard,
+  });
+}
+
 // Generate slug from title
 function generateSlug(title: string): string {
   return title
@@ -1064,10 +1111,16 @@ bot.on('message:photo', async (ctx) => {
   const data = session.data as SessionData;
   data.image = imageUrl;
 
-  await updateSession(chatId, BotState.WAITING_MANUAL_DATA, data);
-  await ctx.reply('✅ Foto recebida! Agora me envie o *titulo do produto*:', {
-    parse_mode: 'Markdown',
-  });
+  if (data.title || data.price) {
+    await updateSession(chatId, BotState.IDLE, data);
+    await ctx.reply('✅ Imagem atualizada!');
+    await sendProductPreview(ctx, data);
+  } else {
+    await updateSession(chatId, BotState.WAITING_MANUAL_DATA, data);
+    await ctx.reply('✅ Foto recebida! Agora me envie o *titulo do produto*:', {
+      parse_mode: 'Markdown',
+    });
+  }
 });
 
 // Handle callback queries (inline buttons)
@@ -1213,6 +1266,7 @@ bot.on('callback_query:data', async (ctx) => {
         await updateSession(chatId, BotState.IDLE, data);
         await ctx.reply(`✅ Categoria definida: ${data.category}`);
         await ctx.answerCallbackQuery();
+        await sendProductPreview(ctx, data);
       }
       break;
   }
@@ -1348,14 +1402,14 @@ bot.on('message:text', async (ctx) => {
       break;
     }
 
-    // Product states
     case BotState.WAITING_TITLE:
       data.title = text;
       await updateSession(chatId, BotState.IDLE, data);
       await ctx.reply('✅ Titulo atualizado!');
+      await sendProductPreview(ctx, data);
       break;
 
-    case BotState.WAITING_PRICE:
+    case BotState.WAITING_PRICE: {
       const price = parseFloat(text.replace(/[^\d.,]/g, '').replace(',', '.'));
       if (isNaN(price)) {
         await ctx.reply('❌ Preco invalido. Digite novamente (ex: 99.90):');
@@ -1364,9 +1418,11 @@ bot.on('message:text', async (ctx) => {
       data.price = price;
       await updateSession(chatId, BotState.IDLE, data);
       await ctx.reply(`✅ Preco atualizado: R$ ${price.toFixed(2)}`);
+      await sendProductPreview(ctx, data);
       break;
+    }
 
-    case BotState.WAITING_ORIGINAL_PRICE:
+    case BotState.WAITING_ORIGINAL_PRICE: {
       const originalPrice = parseFloat(text.replace(/[^\d.,]/g, '').replace(',', '.'));
       if (isNaN(originalPrice)) {
         await ctx.reply('❌ Preco invalido. Digite novamente (ex: 199.90):');
@@ -1375,12 +1431,15 @@ bot.on('message:text', async (ctx) => {
       data.originalPrice = originalPrice;
       await updateSession(chatId, BotState.IDLE, data);
       await ctx.reply(`✅ Preco original atualizado: R$ ${originalPrice.toFixed(2)}`);
+      await sendProductPreview(ctx, data);
       break;
+    }
 
     case BotState.WAITING_COUPON:
       data.couponCode = text.toUpperCase();
       await updateSession(chatId, BotState.IDLE, data);
       await ctx.reply(`✅ Cupom adicionado: ${data.couponCode}`);
+      await sendProductPreview(ctx, data);
       break;
 
     case BotState.WAITING_MANUAL_DATA:
