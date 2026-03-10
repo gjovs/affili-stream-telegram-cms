@@ -43,24 +43,16 @@ function generateSignature(path: string, timestamp: number, accessToken?: string
  */
 export function extractShopeeIds(url: string): { shopId: number; itemId: number } | null {
   try {
-    // Format: /product/shopId/itemId
-    const productMatch = url.match(/\/product\/(\d+)\/(\d+)/);
+    const productMatch = url.match(/\/(?:product|universal-link\/product)\/(\d+)\/(\d+)/);
     if (productMatch) {
-      return {
-        shopId: parseInt(productMatch[1]),
-        itemId: parseInt(productMatch[2]),
-      };
+      return { shopId: parseInt(productMatch[1]), itemId: parseInt(productMatch[2]) };
     }
-    
-    // Format: i.shopId.itemId
-    const iMatch = url.match(/i\.(\d+)\.(\d+)/);
+
+    const iMatch = url.match(/[-.\/]i\.(\d+)\.(\d+)/);
     if (iMatch) {
-      return {
-        shopId: parseInt(iMatch[1]),
-        itemId: parseInt(iMatch[2]),
-      };
+      return { shopId: parseInt(iMatch[1]), itemId: parseInt(iMatch[2]) };
     }
-    
+
     return null;
   } catch {
     return null;

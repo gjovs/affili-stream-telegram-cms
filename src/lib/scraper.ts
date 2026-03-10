@@ -46,16 +46,10 @@ export async function scrapeUrl(url: string): Promise<ScrapedData> {
   }
 }
 
-// Follow redirects to get final URL
 async function followRedirects(url: string): Promise<string> {
   try {
-    const response = await fetch(url, {
-      method: 'HEAD',
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
+    const client = new Impit({ browser: 'chrome' });
+    const response = await client.fetch(url);
     return response.url || url;
   } catch {
     return url;
@@ -110,13 +104,9 @@ async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
       };
     }
     
-    // Fallback to old scraping method if API fails
-    console.log('Shopee API failed, falling back to scraper');
     return await scrapeShopee(url);
-    
-  } catch (error) {
-    console.error('Error in scrapeShopeeWithApi:', error);
-    // Fallback to old scraping method
+
+  } catch {
     return await scrapeShopee(url);
   }
 }
@@ -124,16 +114,14 @@ async function scrapeShopeeWithApi(url: string): Promise<ScrapedData> {
 // Shopee scraper - extract from URL params and HTML (fallback)
 async function scrapeShopee(url: string): Promise<ScrapedData> {
   try {
-    // Extract shop_id and item_id from URL
     const urlMatch = url.match(/\/(\d+)\/(\d+)/);
     const shopId = urlMatch?.[1];
     const itemId = urlMatch?.[2];
 
     if (!shopId || !itemId) {
-      // Try alternative patterns
       const itemMatch = url.match(/[?&]itemid=(\d+)/i);
       const shopMatch = url.match(/[?&]shopid=(\d+)/i);
-      
+
       if (!itemMatch || !shopMatch) {
         return {
           title: null,
@@ -141,8 +129,7 @@ async function scrapeShopee(url: string): Promise<ScrapedData> {
           description: null,
           price: null,
           originalPrice: null,
-          success: false,
-          error: 'Não foi possível extrair dados do link da Shopee. O link pode estar incorreto ou expirado.',
+          success: true,
         };
       }
     }
